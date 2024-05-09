@@ -1,6 +1,6 @@
 #!/usr/bin/python
 # coding=utf-8
-
+import random
 import re
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QPushButton, QTableWidgetItem, QTableWidget, QWidget
@@ -12,7 +12,7 @@ from ..TaskGenerator import TaskGeneratorDialog
 from .CustomFieldsEditor import CustomFieldsEditor
 
 from simso.core import Task
-from simso.generator.task_generator import gen_arrivals
+from simso.generator.task_generator import gen_arrivals, gen_list_wcets, gen_wcet_deviations
 
 convert_function = {
     'int': int,
@@ -65,22 +65,44 @@ class TasksTab(Tab):
     def generate(self):
         generator = TaskGeneratorDialog(len(self.configuration.proc_info_list))
         if generator.exec_():
+            task_class = generator.get_task_class()
             self._tasks_table.remove_all_tasks()
-            periodic_tasks = generator.get_nb_periodic_tasks()
-            i = 0
-            for ci, pi in generator.taskset:
-                i += 1
-                if i <= periodic_tasks:
-                    task = self.configuration.add_task(
-                        "Task " + str(i), i, period=pi, wcet=ci, deadline=pi)
-                else:
-                    task = self.configuration.add_task(
-                        "Task " + str(i), i, period=pi, wcet=ci, deadline=pi,
-                        task_type="Sporadic",
-                        list_activation_dates=gen_arrivals(
-                            pi, 0, self.configuration.duration_ms))
-
-                self._tasks_table.add_task(task)
+            if task_class == "Generic":
+                periodic_tasks = generator.get_nb_periodic_tasks()
+                i = 0
+                for ci, pi, _ in generator.taskset:
+                    i += 1
+                    if i <= periodic_tasks:
+                        task = self.configuration.add_task(
+                            "Task " + str(i), i, period=pi, wcet=ci, deadline=pi)
+                    else:
+                        task = self.configuration.add_task(
+                            "Task " + str(i), i, period=pi, wcet=ci, deadline=pi,
+                            task_type="Sporadic",
+                            list_activation_dates=gen_arrivals(
+                                pi, 0, self.configuration.duration_ms))
+                    self._tasks_table.add_task(task)
+            else:
+                periodic_tasks = generator.get_mc_nb_tasks()
+                i = 0
+                for ci, pi, crit_level in generator.taskset:
+                    i += 1
+                    if i <= periodic_tasks:
+                        nr_crit_levels = int(generator.get_nr_crit_levels())
+                        wcets = gen_list_wcets(ci, nr_crit_levels, crit_level)
+                        wcet_deviations = gen_wcet_deviations(wcets, nr_crit_levels)
+                        task = self.configuration.add_task(
+                            "Task " + str(i), i, task_class=task_class, period=pi, wcet=ci,
+                            deadline=pi, nr_crit_levels=nr_crit_levels, crit_level=crit_level,
+                            list_wcets=wcets, wcet_deviations=wcet_deviations
+                        )
+                    else:
+                        task = self.configuration.add_task(
+                            "Task " + str(i), i, period=pi, wcet=ci, deadline=pi,
+                            task_type="Sporadic",
+                            list_activation_dates=gen_arrivals(
+                                pi, 0, self.configuration.duration_ms))
+                    self._tasks_table.add_task(task)
 
 
 class TasksButtonBar(AddRemoveButtonBar):
@@ -103,31 +125,38 @@ class TasksTable(QTableWidget):
         self._configuration = configuration
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
 
-        self._header = ["id", "Name", "Task type", "Abort on miss",
+        self._header = ["id", "Name", "Task class", "Task type", "Abort on miss",
                         "Act. Date (ms)", "Period (ms)",
                         "List of Act. dates (ms)", "Deadline (ms)",
                         "WCET (ms)", "ACET (ms)", "ET Std Dev (ms)",
                         "Base CPI", "Instructions", "MIX",
-                        "Stack file", "Preemption cost", "Followed by"]
+                        "Stack file", "Preemption cost", "Followed by",
+                        "Nr. Crit. Levels", "Criticality level",
+                        "List of WCETS (ms)", "List of WCET Deviations(ms)"]
 
         self._dict_header = {
             'id': 0,
             'name': 1,
-            'task_type': 2,
-            'abort': 3,
-            'activation_date': 4,
-            'period': 5,
-            'list_activation_dates': 6,
-            'deadline': 7,
-            'wcet': 8,
-            'acet': 9,
-            'et_stddev': 10,
-            'base_cpi': 11,
-            'n_instr': 12,
-            'mix': 13,
-            'sdp': 14,
-            'preemption_cost': 15,
-            'followed': 16
+            'task_class': 2,
+            'task_type': 3,
+            'abort': 4,
+            'activation_date': 5,
+            'period': 6,
+            'list_activation_dates': 7,
+            'deadline': 8,
+            'wcet': 9,
+            'acet': 10,
+            'et_stddev': 11,
+            'base_cpi': 12,
+            'n_instr': 13,
+            'mix': 14,
+            'sdp': 15,
+            'preemption_cost': 16,
+            'followed': 17,
+            'nr_crit_levels': 18,
+            'crit_level': 19,
+            'list_wcets': 20,
+            'wcet_deviations': 21
         }
 
         self.refresh_table()
@@ -186,6 +215,14 @@ class TasksTable(QTableWidget):
                      QTableWidgetItem(str(task.name)))
 
         combo = QComboBox()
+        items = ['Generic', 'Mixed-Criticality']
+        combo.addItems(items)
+        combo.setCurrentIndex(combo.findText(task.task_class))
+        combo.currentIndexChanged.connect(
+            lambda x: self._cell_changed(row, self._dict_header['task_class']))
+        self.setCellWidget(row, self._dict_header['task_class'], combo)
+
+        combo = QComboBox()
         items = [task_type for task_type in Task.task_types_names]
         combo.addItems(items)
         combo.setCurrentIndex(combo.findText(task.task_type))
@@ -205,9 +242,16 @@ class TasksTable(QTableWidget):
         self.item(row, self._dict_header['list_activation_dates']) \
             .setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        self.setItem(row, self._dict_header['list_wcets'],
+                     QTableWidgetItem(
+                         ', '.join(map(str, task.list_wcets))))
+        self.item(row, self._dict_header['list_wcets']) \
+            .setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         for i in ['activation_date', 'period',
                   'deadline', 'wcet', 'base_cpi', 'n_instr', 'mix', 'acet',
-                  'et_stddev', 'preemption_cost']:
+                  'et_stddev', 'preemption_cost', 'nr_crit_levels',
+                  'crit_level', 'wcet_deviations']:
             self.setItem(row, self._dict_header[i],
                          QTableWidgetItem(str(task.__dict__[i])))
             self.item(row, self._dict_header[i]) \
@@ -233,6 +277,7 @@ class TasksTable(QTableWidget):
 
         self._ignore_cell_changed = False
         self._show_period(task, row)
+        self._show_criticality_fields(task, row)
 
     def update_path(self):
         row = 0
@@ -253,7 +298,7 @@ class TasksTable(QTableWidget):
     def _show_period(self, task, row):
         self._ignore_cell_changed = True
 
-        fields = Task.task_types[task.task_type].fields
+        fields = Task.task_types[task.task_class][task.task_type].fields
         for field in ['activation_date', 'list_activation_dates', 'period',
                       'deadline', 'wcet']:
             flags = self.item(row, self._dict_header[field]).flags()
@@ -269,6 +314,34 @@ class TasksTable(QTableWidget):
             else:
                 flags &= ~(Qt.ItemIsEnabled)
                 self.item(row, self._dict_header[field]).setText('-')
+            self.item(row, self._dict_header[field]).setFlags(flags)
+
+        self._ignore_cell_changed = False
+
+    def _show_criticality_fields(self, task, row):
+        self._ignore_cell_changed = True
+        default_values = {
+            'wcet': '-',
+            'nr_crit_levels': '1',
+            'crit_level': '0',
+            'list_wcets': '-',
+            'wcet_deviations': '-'
+        }
+        fields = Task.task_types[task.task_class][task.task_type].fields
+        for field in ['wcet', 'nr_crit_levels', 'crit_level', 'list_wcets', 'wcet_deviations']:
+            flags = self.item(row, self._dict_header[field]).flags()
+            if field in fields:
+                flags |= Qt.ItemIsEnabled
+                if field in ['list_wcets', 'wcet_deviations']:
+                    self.item(row, self._dict_header[field]).setText(
+                        str(', '.join(
+                            map(str, getattr(task, field)))))
+                else:
+                    self.item(row, self._dict_header[field]).setText(
+                        str(task.__dict__[field]))
+            else:
+                flags &= ~(Qt.ItemIsEnabled)
+                self.item(row, self._dict_header[field]).setText(default_values[field])
             self.item(row, self._dict_header[field]).setFlags(flags)
 
         self._ignore_cell_changed = False
@@ -326,6 +399,16 @@ class TasksTable(QTableWidget):
             old_value = str(task.mix)
         elif col == self._dict_header['preemption_cost']:
             old_value = str(task.preemption_cost)
+        elif col == self._dict_header['nr_crit_levels']:
+            old_value = str(task.nr_crit_levels)
+        elif col == self._dict_header['crit_level']:
+            old_value = str(task.crit_level)
+        elif col == self._dict_header['list_wcets']:
+            old_value = ', '.join(
+                map(str, task.list_wcets))
+        elif col == self._dict_header['wcet_deviations']:
+            old_value = ', '.join(
+                map(str, task.wcet_deviations))
         elif col >= len(self._header):
             key = self._custom_fields[col - len(self._header)]
             try:
@@ -345,6 +428,9 @@ class TasksTable(QTableWidget):
                 name = str(self.item(row, col).text()).strip()
                 assert re.match('^[a-zA-Z][a-zA-Z0-9 _-]+$', name)
                 task.name = str(self.item(row, col).text())
+            elif col == self._dict_header['task_class']:
+                task.task_class = str(self.cellWidget(row, col).currentText())
+                self._show_criticality_fields(task, row)
             elif col == self._dict_header['task_type']:
                 task.task_type = str(self.cellWidget(row, col).currentText())
                 self._show_period(task, row)
@@ -405,6 +491,34 @@ class TasksTable(QTableWidget):
                     task.followed_by = int(m.group(1))
                 else:
                     task.followed_by = None
+            elif col == self._dict_header['nr_crit_levels']:
+                nr_crit_levels = int(self.item(row, col).text())
+                assert nr_crit_levels >= 1
+                task.nr_crit_levels = nr_crit_levels
+                wcets = []
+                task.list_wcets = wcets
+                task.wcet = 0
+                self.item(row, self._dict_header['list_wcets']).setText(', '.join(map(str, wcets)))
+                self.item(row, self._dict_header['crit_level']).setText('0')
+            elif col == self._dict_header['crit_level']:
+                crit_level = int(self.item(row, col).text())
+                assert 0 <= crit_level < task.nr_crit_levels
+                task.crit_level = crit_level
+            elif col == self._dict_header['list_wcets']:
+                wcets = list(map(float, self.item(row, col).text().split(',')))
+                nr_crit_levels = task.nr_crit_levels
+                assert nr_crit_levels >= 1
+                assert len(wcets) == nr_crit_levels
+                task.list_wcets = wcets
+                task.wcet = wcets[task.crit_level]
+                self.item(row, col).setText(', '.join(map(str, wcets)))
+            elif col == self._dict_header['wcet_deviations']:
+                wcet_deviations = list(map(float, self.item(row, col).text().split(',')))
+                nr_crit_levels = task.nr_crit_levels
+                assert nr_crit_levels >= 1
+                assert len(wcet_deviations) == nr_crit_levels
+                task.wcet_deviations = wcet_deviations
+                self.item(row, col).setText(', '.join(map(str, wcet_deviations)))
             elif col >= len(self._header):
                 key = self._custom_fields[col - len(self._header)]
                 task.data[key] = convert_function[
