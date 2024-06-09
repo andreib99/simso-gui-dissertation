@@ -492,14 +492,21 @@ class TasksTable(QTableWidget):
                 else:
                     task.followed_by = None
             elif col == self._dict_header['nr_crit_levels']:
+                all_tasks = self._configuration.task_info_list
                 nr_crit_levels = int(self.item(row, col).text())
                 assert nr_crit_levels >= 1
-                task.nr_crit_levels = nr_crit_levels
                 wcets = []
-                task.list_wcets = wcets
-                task.wcet = 0
-                self.item(row, self._dict_header['list_wcets']).setText(', '.join(map(str, wcets)))
-                self.item(row, self._dict_header['crit_level']).setText('0')
+                wcet_devs = []
+                for t in all_tasks:
+                    t.nr_crit_levels = nr_crit_levels
+                    t.list_wcets = wcets
+                    t.wcet_deviations = wcet_devs
+                    t.wcet = 0
+                for i in range(len(all_tasks)):
+                    self.item(i, self._dict_header['nr_crit_levels']).setText(str(nr_crit_levels))
+                    self.item(i, self._dict_header['list_wcets']).setText(', '.join(map(str, wcets)))
+                    self.item(i, self._dict_header['crit_level']).setText('0')
+                    self.item(i, self._dict_header['wcet_deviations']).setText(', '.join(map(str, wcet_devs)))
             elif col == self._dict_header['crit_level']:
                 crit_level = int(self.item(row, col).text())
                 assert 0 <= crit_level < task.nr_crit_levels
